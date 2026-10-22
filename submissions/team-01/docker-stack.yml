@@ -2,5 +2,16 @@ version: "3.8"
 services:
   api:
     image: nginx:1.27-alpine
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     deploy:
-      replicas: 1  # TODO: aplicar contrato de misión
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+        delay: 2s
+      resources:
+        limits:
+          memory: 128M
