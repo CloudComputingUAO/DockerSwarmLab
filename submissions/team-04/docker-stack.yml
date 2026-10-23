@@ -2,5 +2,26 @@ version: "3.8"
 services:
   frontend:
     image: traefik/whoami:v1.11
+    ports:
+      - "18080:80"
+    networks: 
+      - private_net
     deploy:
       replicas: 1  # TODO: aplicar contrato de misión
+      restart_policy:
+        condition: on-failure
+
+  backend:
+    image: traefik/whoami:v1.11
+    networks:
+      - private_net
+    
+    deploy:
+      replicas: 2  # TODO: aplicar 
+      restart_policy:
+        condition: on-failure
+        
+networks:
+  private_net:
+     driver: overlay
+     attachable: true
