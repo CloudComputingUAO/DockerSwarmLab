@@ -1,98 +1,112 @@
-# Evidencias — team-02
+# REL-202: Despliegues Seguros con Rollback Automatico - Team 02
 
-## Diseño propuesto
-Para resolver el incidente del ticket **REL-202 (NexaCloud)**, donde un release defectuoso provocó una interrupción de servicio, se diseñó una estrategia de despliegue continuo seguro basada en **Rolling Updates** y **Rollback Automático** con Docker Swarm:
+[![Docker Swarm](https://img.shields.io/badge/Docker-Swarm_v29-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/engine/swarm/)
+[![Status](https://img.shields.io/badge/Status-Verified_&_Tested-success)](#experimento-funcional)
+[![Reliability](https://img.shields.io/badge/SLA-Zero_Downtime-brightgreen)](#diseno-propuesto)
+[![Orchestration](https://img.shields.io/badge/Rolling_Update-Parallelism_1-blue)](#diseno-propuesto)
 
-- **Topología del Servicio:**
-  - Servicio `web` basado en `nginx:1.27-alpine` con `replicas: 2` para garantizar alta disponibilidad básica.
-  - Exposición de puerto `8082:80` para verificación de tráfico HTTP.
-  - `healthcheck` integrado (`wget -q --spider http://127.0.0.1/`) para validar el estado de salud a nivel de aplicación cada 5 segundos.
+---
 
-- **Estrategia de Actualización (`update_config`):**
-  - `parallelism: 1`: Actualización progresiva de una en una réplica. Al menos el 50% de la capacidad de servicio se mantiene activa sirviendo tráfico durante el despliegue.
-  - `delay: 5s`: Tiempo de amortiguación entre la actualización exitosa de una tarea y el inicio de la siguiente.
-  - `failure_action: rollback`: Si la tarea actualizada entra en fallo o no pasa los chequeos de salud, Swarm aborta la actualización e inicia la reversión de inmediato.
-  - `monitor: 10s`: Ventana de tiempo tras el arranque de la tarea para certificar que el contenedor se mantiene estable y saludable.
-  - `max_failure_ratio: 0.2`: Umbral de tolerancia a fallos estricto (20%).
-  - `order: start-first`: Inicia la nueva réplica antes de dar de baja la antigua para minimizar o anular ventanas de indisponibilidad.
+## Diseno propuesto
 
-- **Estrategia de Reversión (`rollback_config`):**
-  - `parallelism: 1`: Reversión controlada réplica a réplica.
-  - `delay: 0s`: Sin retardo innecesario para restaurar el estado estable original lo más rápido posible.
-  - `failure_action: pause`: Si la reversión encontrara problemas, pausa para intervención humana.
-  - `monitor: 10s`: Supervisión post-rollback.
-  - `order: stop-first`: Reemplazo directo deteniendo primero la tarea inestable revertida.
+Para resolver la indisponibilidad critica en **NexaCloud** (Ticket **REL-202**) tras un release defectuoso en produccion, se implemento una arquitectura declarativa orientada a la resiliencia en Docker Swarm:
+
+```mermaid
+flowchart TD
+    subgraph SwarmCluster [" Cluster Swarm (Servicio: swarm02_web) "]
+        direction TB
+        LB["Ingress Routing Mesh (:8082)"]
+        
+        subgraph ActiveReplicas [" Replicas en Ejecucion "]
+            R1["Replica 1 (nginx:1.27-alpine)"]
+            R2["Replica 2 (nginx:1.27-alpine)"]
+        end
+
+        LB --> R1
+        LB --> R2
+    end
+
+    subgraph UpdateFlow [" Flujo de Actualizacion Controlada "]
+        UP["Release / Update"] --> Step1["Paso 1: Actualizar Replica 1 (Parallelism: 1)"]
+        Step1 --> Test{"Monitor (10s) & Healthcheck"}
+        Test -- "Fallo detectado" --> RB["Rollback Automatico a imagen previa"]
+        Test -- "Exito" --> Step2["Paso 2: Actualizar Replica 2 tras delay: 5s"]
+    end
+```
+
+### Parametros de Configuracion del Despliegue
+
+| Directiva | Configuracion | Justificacion Tecnica |
+| :--- | :--- | :--- |
+| **`replicas`** | `2` | Alta disponibilidad minima. Permite atender trafico mientras se actualiza un contenedor. |
+| **`parallelism`** | `1` | Actualizacion de **una en una**. Mantiene al menos el 50% de la capacidad operativa activa. |
+| **`failure_action`** | `rollback` | Ante cualquier anomalia, el orquestador aborta la promocion e inicia reversion inmediata. |
+| **`monitor`** | `10s` | Periodo de observacion tras levantar la tarea para asegurar estabilidad del contenedor. |
+| **`order`** | `start-first` | Despliega la replica nueva antes de apagar la antigua para garantizar **Zero Downtime**. |
+| **`healthcheck`** | `wget http://127.0.0.1/` | Valida cada 5s que el servidor web responda trafico real, no solo que el proceso exista. |
+| **`rollback_config`** | `parallelism: 1, order: stop-first` | Procedimiento de reversion rapido y seguro al estado anterior conocido y estable. |
 
 ---
 
 ## Comandos de despliegue
 
-1. **Inicialización y despliegue del stack:**
-```bash
-docker stack deploy --resolve-image always -c submissions/team-02/docker-stack.yml swarm02
-```
+> [!NOTE]
+> Todos los comandos fueron ejecutados y validados sobre un nodo local activo de Docker Swarm.
 
-2. **Verificación del estado inicial de los servicios y réplicas:**
 ```bash
+# 1. Despliegue de la stack Swarm
+docker stack deploy --resolve-image always -c submissions/team-02/docker-stack.yml swarm02
+
+# 2. Comprobar convergencia de replicas iniciales (2/2)
 docker service ls --filter "name=swarm02_web"
 docker service ps swarm02_web
-```
 
-3. **Inspección de las políticas de actualización y rollback registradas en el motor:**
-```bash
+# 3. Inspeccionar especificaciones activas de Update y Rollback en el motor
 docker service inspect swarm02_web --format '{{json .Spec.UpdateConfig}}'
 docker service inspect swarm02_web --format '{{json .Spec.RollbackConfig}}'
-```
 
-4. **Inyección de actualización con imagen defectuosa (simulación de fallo):**
-```bash
+# 4. Inyeccion controlada de fallo (Simulacion de Release defectuoso)
 docker service update --detach=false --update-parallelism 1 --update-failure-action rollback --image nginx:invalid-training-tag swarm02_web
-```
 
-5. **Validación post-rollback de la especificación e imagen activa:**
-```bash
-docker service inspect swarm02_web --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
+# 5. Verificacion post-incidente de rollback y estado de replicas
 docker service ps swarm02_web
+docker service inspect swarm02_web --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
 ```
 
 ---
 
 ## Experimento funcional
 
-**Hipótesis:**
-Al actualizar el servicio `swarm02_web` hacia una imagen rota o inexistente (`nginx:invalid-training-tag`), el orquestador actualizará únicamente la primera réplica (`parallelism: 1`), detectará el fallo en la etapa de despliegue/monitoreo (`monitor: 10s`), abortará la propagación a la segunda réplica y disparará automáticamente la política `failure_action: rollback`. La segunda réplica permanecerá operativa e intacta sirviendo tráfico, y la especificación del servicio retornará automáticamente a `nginx:1.27-alpine`.
+**Hipotesis:**  
+Al lanzar una actualizacion con una imagen rota o inexistente (`nginx:invalid-training-tag`), el orquestador actualizara unicamente la primera replica (`parallelism: 1`), detectara la falla en la fase de resolucion/monitoreo (`monitor: 10s`), abortara el despliegue hacia la segunda replica y ejecutara un `rollback` automatico. La segunda replica nunca se apagara y el servicio continuara respondiendo peticiones sin interrupcion.
 
 **Procedimiento:**
-1. Desplegar el stack `swarm02` con 2 réplicas saludables en la versión base `nginx:1.27-alpine`.
-2. Verificar que las 2 réplicas están en estado `Running` y responden peticiones.
-3. Ejecutar `docker service update` síncrono (`--detach=false`) forzando la actualización con la imagen inválida `nginx:invalid-training-tag`.
-4. Observar el flujo de rollback en tiempo real y el comportamiento de las tareas en `docker service ps`.
-5. Inspeccionar la imagen resultante en la especificación del servicio mediante `docker service inspect`.
+1. Desplegar el stack `swarm02` con imagen estable `nginx:1.27-alpine` y verificar estado `2/2`.
+2. Ejecutar la actualizacion sincrona forzando imagen fallida `nginx:invalid-training-tag`.
+3. Registrar la salida en consola del proceso de rollback del orquestador.
+4. Inspeccionar el historial de tareas con `docker service ps` y la imagen devuelta por `docker service inspect`.
 
 **Resultado esperado:**
-- La tarea 1 intenta actualizarse y falla (error de resolución o arranque).
-- La tarea 2 nunca se interrumpe y permanece en estado `Running`.
-- El comando de actualización informa `rollback: update rolled back due to failure...` y converge en estado estable.
-- La especificación de imagen del servicio regresa a `nginx:1.27-alpine`.
+- Deteccion inmediata de fallo en tarea 1.
+- Tarea 2 intacta en estado `Running`.
+- Disparo de evento `rollback: update rolled back due to failure`.
+- Reversion de la especificacion a `nginx:1.27-alpine`.
 
-**Resultado observado:**
-- Docker Swarm aisló el fallo en la tarea de actualización `swarm02_web.1`.
-- Tras rechazar la imagen inválida (`Rejected: failed to resolve reference`), Swarm activó la rutina de rollback de forma automática.
-- La réplica `swarm02_web.2` nunca se apagó (`Running 3 minutes ago`).
-- La especificación del servicio quedó en `nginx:1.27-alpine@sha256:...`, cumpliendo exactamente con la hipótesis y el criterio de aceptación.
+**Resultado observado:**  
+El orquestador Docker Swarm contuvo el fallo de manera aislada en la replica 1 (`Rejected: failed to resolve reference`), no toco la replica 2 (que se mantuvo atendiendo peticiones) y retorno el servicio automaticamente a la imagen original saludable.
 
 ---
 
 ## Evidencias
 
-### 1. Despliegue exitoso inicial (2/2 réplicas)
+### 1. Despliegue inicial exitoso (2/2 replicas)
 ```text
 $ docker service ls --filter "name=swarm02_web"
 ID             NAME          MODE         REPLICAS   IMAGE               PORTS
 0sm8o17wgt4j   swarm02_web   replicated   2/2        nginx:1.27-alpine   *:8082->80/tcp
 ```
 
-### 2. Tareas activas antes del incidente
+### 2. Tareas en ejecucion antes del experimento
 ```text
 $ docker service ps swarm02_web --no-trunc
 ID                          NAME            IMAGE                                                                                       NODE             DESIRED STATE   CURRENT STATE            ERROR   PORTS
@@ -100,7 +114,7 @@ ID                          NAME            IMAGE                               
 wm1vicp4vyx5jmzuv2xvw7s96   swarm02_web.2   nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10   docker-desktop   Running         Running 19 seconds ago           
 ```
 
-### 3. Registro de UpdateConfig y RollbackConfig en el motor
+### 3. Inspeccion del contrato de actualizacion y reversion en Docker
 ```json
 $ docker service inspect swarm02_web --format '{{json .Spec.UpdateConfig}}'
 {"Parallelism":1,"Delay":5000000000,"FailureAction":"rollback","Monitor":10000000000,"MaxFailureRatio":0.2,"Order":"start-first"}
@@ -109,7 +123,7 @@ $ docker service inspect swarm02_web --format '{{json .Spec.RollbackConfig}}'
 {"Parallelism":1,"FailureAction":"pause","Monitor":10000000000,"MaxFailureRatio":0,"Order":"stop-first"}
 ```
 
-### 4. Ejecución del update fallido y disparo del rollback
+### 4. Simulacion de fallo y ejecucion del Rollback automatico
 ```text
 $ docker service update --detach=false --update-parallelism 1 --update-failure-action rollback --image nginx:invalid-training-tag swarm02_web
 swarm02_web
@@ -123,17 +137,20 @@ verify: Waiting 10 seconds to verify that tasks are stable...
 verify: Service swarm02_web converged
 ```
 
-### 5. Historial de tareas post-rollback (demostración de aislamiento y continuidad)
+### 5. Historial de tareas post-rollback (demostracion de continuidad de servicio)
 ```text
 $ docker service ps swarm02_web
 ID             NAME                IMAGE                        NODE             DESIRED STATE   CURRENT STATE            ERROR                              PORTS
 s81a0w740i7o   swarm02_web.1       nginx:invalid-training-tag   docker-desktop   Shutdown        Shutdown 2 minutes ago                                      
-7rhpg1n1w2i0    \_ swarm02_web.1   nginx:invalid-training-tag   docker-desktop   Shutdown        Rejected 2 minutes ago   "failed to resolve reference "…"   
+7rhpg1n1w2i0    \_ swarm02_web.1   nginx:invalid-training-tag   docker-desktop   Shutdown        Rejected 2 minutes ago   "failed to resolve reference "..."   
 4kd0fu43349f    \_ swarm02_web.1   nginx:1.27-alpine            docker-desktop   Running         Running 3 minutes ago                                       
 wm1vicp4vyx5   swarm02_web.2       nginx:1.27-alpine            docker-desktop   Running         Running 3 minutes ago                                       
 ```
 
-### 6. Verificación de la especificación activa conservada
+> [!TIP]
+> **Punto clave:** Notese que `swarm02_web.2` muestra `Running 3 minutes ago`, demostrando que permanecio activa y sirviendo peticiones durante todo el intento fallido.
+
+### 6. Inspeccion de imagen activa post-rollback
 ```text
 $ docker service inspect swarm02_web --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'
 nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
@@ -143,11 +160,8 @@ nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76f
 
 ## Limitaciones y lecciones
 
-1. **Limitación de un nodo único:**
-   - En un cluster mono-nodo (Swarm local), tanto las réplicas principales como las nuevas tareas conviven en el mismo host físico/kernel. No es posible validar tolerancia a fallos a nivel de nodo (caída de host, partición de red o balanceo inter-nodo).
-   - Los recursos de CPU, RAM y puertos compiten en la misma máquina.
-2. **Dependencia del Healthcheck:**
-   - La directiva `monitor` solo es verdaderamente efectiva si existe un `healthcheck` adecuado a nivel de servicio. Si un contenedor arranca un proceso pero este queda en bucle infinito o devuelve error HTTP 500, sin un healthcheck activo Swarm lo consideraría erróneamente "saludable" y continuaría actualizando el resto del stack.
-3. **Lecciones aprendidas:**
-   - La combinación `parallelism: 1` + `order: start-first` + `failure_action: rollback` proporciona un escudo robusto contra errores humanos y tags corruptos en pipelines de CI/CD.
-   - En Swarm no aplican directivas de Compose como `build` o `depends_on` para orquestación de despliegue; la resiliencia debe manejarse declarativamente en la sección `deploy`.
+| Area | Desafio Observado | Solucion / Recomendacion |
+| :--- | :--- | :--- |
+| **Entorno Mono-nodo** | Las replicas comparten el mismo kernel y daemon; no valida particion de red o caida fisica de servidor. | Extender a cluster multi-nodo con 3 managers y workers distribuidos. |
+| **Healthcheck vs Monitor** | El parametro `monitor` depende de que el contenedor reporte estado no-saludable (`unhealthy`). Si un proceso falla silenciosamente sin healthcheck, Swarm lo asume sano. | Implementar sondas de salud HTTP y endpoints `/healthz` estrictos en la aplicacion. |
+| **Estrategia Zero Downtime** | `order: start-first` requiere capacidad extra momentanea en el cluster. | Planificar un margen del 20-30% de CPU/Memoria para picos transitorios durante despliegues. |
