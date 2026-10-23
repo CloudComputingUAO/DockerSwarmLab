@@ -1,6 +1,32 @@
+
 version: "3.8"
+
 services:
   worker:
     image: nginx:1.27-alpine
+
     deploy:
-      replicas: 1  # TODO: aplicar contrato de misión
+      replicas: 2
+
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.10"
+          memory: 32M
+
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q -O /dev/null http://127.0.0.1/ || exit 1"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
