@@ -49,3 +49,5 @@ Con los comandos de Docker que muestran el estado de las réplicas y la configur
 **¿Qué aprendimos?**
 
 Que Docker Swarm permite administrar varios contenedores, limitar sus recursos y recuperar tareas cuando se presentan fallos.
+
+
