@@ -55,3 +55,4 @@ team04_frontend   replicated   1/1        traefik/whoami:v1.11   *:18080->80/tcp
 - `traefik/whoami` es una imagen *scratch* sin shell, por eso la prueba de DNS se hace con un contenedor busybox conectado a la red (`attachable: true`).
 - En producción: `attachable: false` (o una red separada solo para depuración), red `encrypted`, TLS en el frontend, un proxy real (nginx/traefik) que reenvíe a `backend`, y healthchecks.
 - Lección: `ports` publica en **todos** los nodos vía la routing mesh; un servicio interno nunca debe declararlos.
+
